@@ -1,0 +1,1877 @@
+/*  3D Printed Word Clock 
+ *  by TechKiwiGadgets May 2019
+ *   
+ *   
+ *   
+ *  V4 - Final production version all modes working including LDR
+ *  V5 - Adjusted delays after time completed 
+ *  V6 - Adjusted dimmer circuit (still need to blank off Nano LED glare
+ *  V7 - Optimise dimmer at maximum darkness
+ *  V9 - Added two more animations
+ *  V10 - Limit the dimmer to min of 20
+*/
+
+
+
+// Hardware setup
+// RTC Module
+// RTC SDA - A4
+// RTC SCL - A5
+
+// WS2812 LED Data Bus D11 used to control LED chain
+
+//Libraries
+
+
+#include <TimeLib.h>  
+#include <Wire.h>  
+#include <DS1307RTC.h>  // a basic DS1307 library that returns time as a time_t
+
+// WS2182 LED Driver Library Setup
+#include "FastLED.h"
+// How many leds in your strip?
+#define NUM_LEDS 110 // Note: First LED is address 0 in a 11x10 matrix
+#define DATA_PIN 11 // Note: D11 used to control LED chain
+
+// Define the array of leds
+CRGB leds[NUM_LEDS]; // Defines individual addreaasable LED in the LED chain
+
+// Define Led Matrix
+// Array with following locations: {  0   ,   1 , 2  3            }
+// Array with following Structure: {Value ,   X , Y, LED Colour # }
+byte ledmatrix[110][4];
+
+// Populate the LED Matrix with X,Y Coordinates
+
+byte tempctr = 0; // Points to each LED location
+
+byte animation = 0; // Used to cycle through animation effects
+byte color = 0 ; // Used to cycle through color effects
+
+
+//Constants
+
+int t1 = 200; // Duration in microseconds that LEDs on during callibration
+
+
+
+
+// LED Colour control variables A,B,C  leds[33] = CRGB( A, B, C);
+int A = 0; // LED vaiable for CRGB position 1
+int B = 255; // LED vaiable for CRGB position 2
+int C = 0; // LED vaiable for CRGB position 3
+int testLED = 0;// Used to test the colour of LED Arrays
+
+
+//Variables
+
+int cyclerefresh = 600; // used to count cycles before refreshing the display
+
+int T1 = 0;// LED Powerup Sequence delay
+
+// Dimmer is the delay in microseconds impacting LED brightness
+int  Dimmer = 400;
+float smoothedDim = 400;
+const float alpha = 0.6;
+// LDR is across A7 and has an input range of 6K to 24k from light to dark respectively
+int LDR; // The variable dimmer is the duration in Millseconds that each LED is left on before being turned off in the LED array
+
+
+void setup() {
+  Serial.begin(9600); // Setupserial interface for test data outputs
+
+ 
+
+
+  
+// WS2182 LED Driver Setup
+  LEDS.addLeds<WS2812,DATA_PIN,GRB>(leds,NUM_LEDS); // Default if RGB for this however may vary dependent on LED manufacturer
+  LEDS.setBrightness(100); //Set brightness of LEDs here
+  // limit my draw to 1A at 5v of power draw
+//  FastLED.setMaxPowerInVoltsAndMilliamps(5,200);
+  FastLED.setDither(0); // Turns off Auto Dithering function to remove flicker
+
+ //Initialize RTC
+  
+   //while (!Serial) ; // wait until Arduino Serial Monitor opens
+  delay(200);
+  setSyncProvider(RTC.get);   // the function to get the time from the RTC
+  setSyncInterval(10); // sync the time every 60 seconds (1 minutes)
+  if(timeStatus()!= timeSet){ 
+     Serial.println("Unable to sync with the RTC");
+     RTC.set(1408278800); // set the RTC to Aug 25 2014 9:00 am
+     setTime(1408278800);
+    }
+    else{
+     Serial.println("RTC has set the system time");   
+    }
+
+
+// Pre-load the Matrix with colour and coordinate values
+      
+      for (byte x = 0; x < 11; x++) {
+
+         for (byte y = 0; y < 10; y++) {
+
+            tempctr = ((x * 10)+(9 - y)); // Calculate the LED value in the 11 x 10 Matrix
+
+            // Poke the coordinates into the array for each LED in the Matrix
+
+            ledmatrix[tempctr][0] = 0;
+            ledmatrix[tempctr][1] = x;
+            ledmatrix[tempctr][2] = y;                        
+            ledmatrix[tempctr][3] = 0;          // Load Green as first colour  
+
+/*
+                Serial.print(tempctr);
+                Serial.print(" x: ");
+                Serial.print(x);
+                Serial.print(" y: ");
+                Serial.println(y);
+*/
+
+                       
+         }
+        
+      }
+
+//delay(2000);
+
+  // initialize the Button I/O pins as Digital Inputs for Increment and Decrement time for manual adjustment of time
+    // Setup Input Mode and Select Push Buttons
+    pinMode(3,INPUT_PULLUP); // Animation Button
+    pinMode(4,INPUT_PULLUP); // Time Set Button + Animation means increment time, Time Set Button + Colour means decrement time
+    pinMode(5,INPUT_PULLUP); //  Colour Button
+
+
+  ledtest(); // startup led test
+
+
+
+      
+}
+
+
+void loop() {
+
+cyclerefresh++; // Increment refresh counter
+
+
+// ****** Adjust Brightness of the LEDs using the LDR on A7 ******
+// AnalogRead of A7 yeilds 220 = Dark, 600 = Bright
+// firstly use smooting algorythm to aoiv fluctuations due to sudden changes of light
+
+    smoothedDim = (alpha * smoothedDim) + ( (1 - alpha) * analogRead(7));
+
+// Translate 380 into range of 100 using map(value, fromLow, fromHigh, toLow, toHigh)
+
+//    Dimmer = abs(map(smoothedDim, 220, 420, 1, 100));
+
+    Dimmer = map(smoothedDim, 240, 420, 20, 100);// Changed min value to 4
+     if(Dimmer < 20) {
+      Dimmer = 20;
+     }
+
+    
+
+      LEDS.setBrightness(Dimmer); //Set brightness of LEDs here
+
+// Read the current date and time from the RTC
+
+  if ((timeStatus() == timeSet)&&(cyclerefresh >5)) {
+
+    cyclerefresh = 0; // Reset refresh counter
+   
+    UpdateArray(); // Update Array with time
+   // Choose the display algorythm 
+
+        if (animation == 0 ){ // Display animation option 1 standard Word Clock Display
+            RainbowDisplay();
+        } else       
+        if (animation == 1 ){ // Display animation option 2 Matrix effect
+              Matrixeffect();
+        } else       
+        if (animation == 2 ){ // Display animation option 3 Typing effect
+              TypeDisplay();
+        } else        
+        if (animation == 3 ){ // Display animation option 4 rainbow effect
+              UpdateDisplay();
+        } else        
+        if (animation == 4 ){ // Display animation option 4 rainbow effect
+              WipeDisplay();
+        } else
+        if (animation == 5 ){ // Display animation option 4 rainbow effect
+            CircleDisplay();
+        } else
+        if (animation == 6 ){ // Display animation option 4 rainbow effect
+            RainDisplay();
+        }
+
+    
+  } 
+
+
+
+//delay(400);
+// Serial.println(analogRead(7));
+//  Serial.println(smoothedDim); 
+   Serial.println(Dimmer); 
+ //    Serial.println(analogRead(7));  // 220 = Dark, 600 = Bright
+
+
+
+ animationbutton();   // Animation Button Pushed
+ colorbuttonpushed(); //  Color Button Pushed
+ incrementpushed();   //Increment Time Button Pushed
+ decrementpushed();   //Decrement Time Button Pushed
+
+
+
+}
+
+
+
+void animationbutton() {
+  // Animation Button Pushed
+    if((digitalRead(3) == HIGH)&&(digitalRead(4) == HIGH)&&(digitalRead(5) == LOW)){
+        delay(100); // Debounce by waiting then checking again
+      if((digitalRead(3) == HIGH)&&(digitalRead(4) == HIGH)&&(digitalRead(5) == LOW)){
+    
+              animation++;
+                if (animation > 6 ) {
+                animation = 0;       
+                }
+             // Signal to user that change made
+             blankscreen();
+             flagscreen1();
+             delay(1000);
+             blankscreen(); 
+             cyclerefresh = 10; // Reset refresh screen counter          
+        }
+        delay(100);
+     }
+}
+
+void decrementpushed() {
+  
+  //Decrement Button Pushed
+  if((digitalRead(3) == LOW)&&(digitalRead(4) == LOW)&&(digitalRead(5) == HIGH)){
+    delay(100); // Debounce by waiting then checking again
+    if((digitalRead(3) == LOW)&&(digitalRead(4) == LOW)&&(digitalRead(5) == HIGH)){
+        if(timeStatus() == timeSet){
+            adjustTime(-60);
+            RTC.set(now() -60);
+ 
+               // Signal to user that change made
+               blankscreen();
+               flagscreen3();
+               delay(1000);
+               blankscreen();  
+               cyclerefresh = 10; // Reset refresh screen counter                           
+        
+        }
+    }
+    delay(100);
+  }
+}
+
+void incrementpushed() {
+    //Increment Button Pushed
+  if((digitalRead(4) == LOW)&&(digitalRead(5) == LOW)&&(digitalRead(3) == HIGH)){
+    delay(100); // Debounce by waiting then checking again
+    if((digitalRead(4) == LOW)&&(digitalRead(5) == LOW)&&(digitalRead(3) == HIGH)){
+       if(timeStatus() == timeSet){
+          adjustTime(60);
+          RTC.set(now() + 60);
+  
+               // Signal to user that change made
+               blankscreen();
+               flagscreen4();
+               delay(1000);
+               blankscreen(); 
+               cyclerefresh = 10; // Reset refresh screen counter              
+        
+        }
+    }
+  delay(100);
+  }
+}
+
+
+void colorbuttonpushed() {
+    // Color Button Pushed
+  if((digitalRead(3) == LOW)&&(digitalRead(4) == HIGH)&&(digitalRead(5) == HIGH)){
+    delay(100); // Debounce by waiting then checking again
+    if((digitalRead(3) == LOW)&&(digitalRead(4) == HIGH)&&(digitalRead(5) == HIGH)){
+  
+         color++;
+         if (color > 6 ) {
+          color = 0;
+        }
+               // Signal to user that change made
+               blankscreen();
+               flagscreen2();
+               delay(1000);
+               blankscreen(); 
+               cyclerefresh = 10; // Reset refresh screen counter         
+    }
+  delay(100);
+  }
+}
+
+void WipeDisplay() { // Horizont
+
+ // Blank display
+fill_solid( leds, 110, CRGB(0,0,0)); 
+FastLED.show();   
+delay(300);
+
+byte tctr = 0;
+
+      for (byte r = 0; r < 10; r++) {
+
+         for (byte c = 0; c < 11; c++) {
+
+              // Calculate the LED location
+              
+              tctr = ((c * 10)+(9 - r)); // Calculate the LED value in the 11 x 10 Matrix
+
+                   if ( color == 0) {
+      
+                      leds[tctr] = CRGB::Green; 
+                    
+                      } else if ( color == 1) {
+      
+                      leds[tctr] = CRGB::Red;    
+      
+                       } else if ( color == 2) {
+      
+                      leds[tctr] = CRGB::Blue; 
+      
+                       } else if ( color == 3) {
+      
+                      leds[tctr] = CRGB::Aqua;                                 
+      
+                      } else if ( color == 4) {
+      
+                      leds[tctr] = CRGB::Indigo; 
+      
+                       } else if ( color == 5) {
+      
+                      leds[tctr] = CRGB::Violet; 
+                       }else if ( color == 6) {
+      
+                      leds[tctr] = CRGB::Orange; 
+                       }
+      
+                       FastLED.show();  
+                      delay(5);      // Set delay between typing out time characters 
+
+
+
+              if ( ledmatrix[tctr][0] == 1) {
+      
+                 leds[tctr] = CRGB( 120, 255, 255); 
+                 FastLED.show(); 
+//                 delay(200);      // Set delay between typing out time characters                   
+
+
+    
+      
+                    }         
+         }
+        
+      }
+
+delay(3000);
+}
+
+
+
+void WipeDisplay2() { // Horizont
+
+ // Blank display
+fill_solid( leds, 110, CRGB(0,0,0)); 
+FastLED.show();   
+delay(300);
+
+byte tctr = 0;
+
+      for (byte r = 0; r < 10; r++) {
+
+         for (byte c = 0; c < 11; c++) {
+
+              // Calculate the LED location
+              
+              tctr = ((c * 10)+(9 - r)); // Calculate the LED value in the 11 x 10 Matrix
+
+                   if ( color == 0) {
+      
+                      leds[tctr] = CRGB::Green; 
+                    
+                      } else if ( color == 1) {
+      
+                      leds[tctr] = CRGB::Red;    
+      
+                       } else if ( color == 2) {
+      
+                      leds[tctr] = CRGB::Blue; 
+      
+                       } else if ( color == 3) {
+      
+                      leds[tctr] = CRGB::Aqua;                                 
+      
+                      } else if ( color == 4) {
+      
+                      leds[tctr] = CRGB::Indigo; 
+      
+                       } else if ( color == 5) {
+      
+                      leds[tctr] = CRGB::Violet; 
+                       }else if ( color == 6) {
+      
+                      leds[tctr] = CRGB::Orange; 
+                       }
+      
+                       FastLED.show();  
+                       delay(50);      // Set delay between typing out time characters 
+
+
+
+              if ( ledmatrix[tctr][0] == 1) {
+      
+                 leds[tctr] = CRGB( 120, 255, 255); 
+                 FastLED.show(); 
+//                 delay(200);      // Set delay between typing out time characters                   
+
+
+    
+      
+                    } else {
+            
+                        leds[tctr] = CRGB::Black;   
+                       FastLED.show();                 
+                    }         
+         }
+        
+      }
+}
+
+void UpdateDisplay() { // Step through each location in the Matrix Display Array Data in LED Matrix
+
+
+      for (int l = 0; l < 110; l++) {
+
+        if ( ledmatrix[l][0] == 1) {
+
+                if ( color == 0) {
+
+                  leds[l] = CRGB::Green; 
+              
+                } else if ( color == 1) {
+
+                  leds[l] = CRGB::Red;    
+
+                 } else if ( color == 2) {
+
+                  leds[l] = CRGB::Blue; 
+
+                 } else if ( color == 3) {
+
+                  leds[l] = CRGB::Yellow;                                 
+
+                } else if ( color == 4) {
+
+                  leds[l] = CRGB::White; 
+
+                 } else if ( color == 5) {
+
+                  leds[l] = CRGB::Violet; 
+                  
+                 }else if ( color == 6) {
+
+                  leds[l] = CRGB::Aqua; 
+                  
+                 }
+              
+  
+        } else {
+
+            leds[l] = CRGB::Black;   
+          
+        }
+        
+      }
+
+
+      FastLED.show();
+}
+
+
+void RainDisplay() { // Step through each location in the Matrix Display Array Data in LED Matrix
+
+
+byte colorflag = 0;
+
+      for (int l = 0; l < 110; l++) {
+
+         leds[l] = CRGB::Blue; 
+         FastLED.show();
+         delay(20);
+         leds[l] = CRGB::Black;                                               
+         FastLED.show();
+
+        if ( ledmatrix[l][0] == 1) {
+          leds[l] = CRGB( 120, 255, 255); 
+          FastLED.show(); 
+        } 
+        
+      }
+
+
+      FastLED.show();
+
+delay(2000);
+}
+
+
+
+
+
+void RainbowDisplay () { // Step through each location in the Matrix Display Array Data in LED Matrix
+
+byte colorflag = 0;
+
+
+      for (int l = 0; l < 110; l++) {
+
+        if ( ledmatrix[l][0] == 1) {
+
+            if ( colorflag == 0) {
+
+                leds[l] = CRGB::Red; 
+              
+                } else if ( colorflag == 1) {
+
+                leds[l] = CRGB::Orange;    
+
+                 } else if ( colorflag == 2) {
+
+                leds[l] = CRGB::Green; 
+
+                 } else if ( colorflag == 3) {
+
+                leds[l] = CRGB::Aqua;                                 
+
+                } else if ( colorflag == 4) {
+
+                leds[l] = CRGB::Indigo; 
+
+                 } else if ( colorflag == 5) {
+
+                leds[l] = CRGB::Violet; 
+                 }
+
+                colorflag++;
+                if (colorflag == 6) {
+                  colorflag = 0; // Reset to beginneing of rainbow
+                }
+  
+        } else {
+
+            leds[l] = CRGB::Black;   
+          
+        }
+        
+      }
+
+
+      FastLED.show();
+}
+
+void  blankscreen() { // Blank out all LEDs
+  // Blank display
+  fill_solid( leds, 110, CRGB(0,0,0)); 
+  FastLED.show();   
+
+}
+
+
+
+void  flagscreen1() { // Blank out all LEDs
+
+ // Blank display
+fill_solid( leds, 110, CRGB(150,255,255)); 
+FastLED.show();   
+delay(300);
+
+byte tctr = 0;
+
+      for (byte r = 2; r < 8; r++) {
+
+         for (byte c = 2; c < 9; c++) {
+
+              // Calculate the LED location
+              
+              tctr = ((c * 10)+(9 - r)); // Calculate the LED value in the 11 x 10 Matrix
+      
+                      leds[tctr] = CRGB::Red;    
+      
+ 
+                       FastLED.show();                      
+           }                
+      }
+}
+
+void  flagscreen2() { // Blank out all LEDs
+
+ // Blank display
+fill_solid( leds, 110, CRGB(150,255,255)); 
+FastLED.show();   
+delay(300);
+
+byte tctr = 0;
+
+      for (byte r = 2; r < 8; r++) {
+
+         for (byte c = 2; c < 9; c++) {
+
+              // Calculate the LED location
+              
+              tctr = ((c * 10)+(9 - r)); // Calculate the LED value in the 11 x 10 Matrix
+      
+                      leds[tctr] = CRGB::Blue;    
+      
+ 
+                       FastLED.show();                    
+           }                
+      } 
+}
+
+void  flagscreen3() { // Blank out all LEDs
+
+ // Blank display
+fill_solid( leds, 110, CRGB(150,255,255)); 
+FastLED.show();   
+delay(300);
+
+byte tctr = 0;
+
+      for (byte r = 2; r < 8; r++) {
+
+         for (byte c = 2; c < 9; c++) {
+
+              // Calculate the LED location
+              
+              tctr = ((c * 10)+(9 - r)); // Calculate the LED value in the 11 x 10 Matrix
+      
+                      leds[tctr] = CRGB::Purple;    
+      
+ 
+                       FastLED.show();                   
+           }                
+      }
+}
+
+void  flagscreen4() { // Blank out all LEDs
+
+ // Blank display
+fill_solid( leds, 110, CRGB(150,255,255)); 
+FastLED.show();   
+delay(300);
+
+byte tctr = 0;
+
+      for (byte r = 2; r < 8; r++) {
+
+         for (byte c = 2; c < 9; c++) {
+
+              // Calculate the LED location
+              
+              tctr = ((c * 10)+(9 - r)); // Calculate the LED value in the 11 x 10 Matrix
+      
+                      leds[tctr] = CRGB::Orange;    
+      
+ 
+                       FastLED.show();                    
+           }                
+      }
+}
+
+void TypeDisplay() { // Type out each row in matrix  through each location in the Matrix Display Array Data in LED Matrix
+
+// Blank display
+fill_solid( leds, 110, CRGB(0,0,0)); 
+FastLED.show();   
+
+byte tctr = 0;
+
+      for (byte r = 0; r < 10; r++) {
+
+         for (byte c = 0; c < 11; c++) {
+
+              // Calculate the LED location
+              
+              tctr = ((c * 10)+(9 - r)); // Calculate the LED value in the 11 x 10 Matrix
+
+              if ( ledmatrix[tctr][0] == 1) {
+      
+                 leds[tctr] = CRGB( 120, 255, 255); 
+                 FastLED.show(); 
+                 delay(200);      // Set delay between typing out time characters                   
+
+
+             if ( color == 0) {
+
+                leds[tctr] = CRGB::Green; 
+              
+                } else if ( color == 1) {
+
+                leds[tctr] = CRGB::Red;    
+
+                 } else if ( color == 2) {
+
+                leds[tctr] = CRGB::Blue; 
+
+                 } else if ( color == 3) {
+
+                leds[tctr] = CRGB::Aqua;                                 
+
+                } else if ( color == 4) {
+
+                leds[tctr] = CRGB::Indigo; 
+
+                 } else if ( color == 5) {
+
+                leds[tctr] = CRGB::Violet; 
+                 }else if ( color == 6) {
+
+                leds[tctr] = CRGB::Orange; 
+                 }
+
+                 FastLED.show();  
+                 delay(50);      // Set delay between typing out time characters     
+
+              } else {
+      
+                  leds[tctr] = CRGB::Black;   
+                 FastLED.show();                 
+              }         
+         }
+        
+      }
+delay(2000);
+}
+
+
+
+
+
+
+
+
+
+void CircleDisplay() { // Running LED chaser from inside to out
+
+fill_solid( leds, 110, CRGB(0,0,0)); 
+FastLED.show();   
+
+byte tctr = 0;
+
+byte x1 = 0;
+byte x2 = 10;
+
+byte y1 = 0;
+byte y2 = 9;
+
+byte dw = 20; // Delay
+
+for (byte f = 1; f < 7; f++) {
+
+  for (byte m = x1; m < x2; m++) { // Print first row left to right
+    
+      tctr = ((m * 10)+(9 - y1)); // Calculate the LED value in the 11 x 10 Matrix
+
+            leds[tctr] = CRGB::Green;  
+            FastLED.show();     
+            delay(dw);      // Set delay between typing out time characters
+            leds[tctr] = CRGB::Black;   
+            FastLED.show();   
+                 
+         // Display result
+         if ( ledmatrix[tctr][0] == 1) {    
+            leds[tctr] = CRGB( 120, 255, 255); 
+            FastLED.show();         
+          }
+    
+    }
+    
+    for (byte m = y1; m < y2; m++) { // Print first column rhs top to bottom
+    
+      tctr = ((x2 * 10)+(9 - m)); // Calculate the LED value in the 11 x 10 Matrix
+
+            leds[tctr] = CRGB::Green;  
+            FastLED.show();     
+            delay(dw);      // Set delay between typing out time characters
+            leds[tctr] = CRGB::Black;   
+            FastLED.show();       
+         // Display result
+         if ( ledmatrix[tctr][0] == 1) {    
+            leds[tctr] = CRGB( 120, 255, 255); 
+            FastLED.show();           
+          }
+    
+    }
+    
+     for (byte m = x2; m > x1; m--) { // Print bottom row right to left
+    
+      tctr = ((m * 10)+(9 - y2)); // Calculate the LED value in the 11 x 10 Matrix
+                        
+            leds[tctr] = CRGB::Green;  
+            FastLED.show();     
+            delay(dw);      // Set delay between typing out time characters
+            leds[tctr] = CRGB::Black;   
+            FastLED.show();          
+         
+         // Display result
+         if ( ledmatrix[tctr][0] == 1) {    
+            leds[tctr] = CRGB( 120, 255, 255); 
+            FastLED.show();           
+          }
+    
+    }
+    
+    for (byte m = y2; m > y1; m--) { // Print first column lhs bottom to top
+    
+      tctr = ((x1 * 10)+(9 - m)); // Calculate the LED value in the 11 x 10 Matrix
+
+            leds[tctr] = CRGB::Green;  
+            FastLED.show();     
+            delay(dw);      // Set delay between typing out time characters
+            leds[tctr] = CRGB::Black;   
+            FastLED.show();   
+            
+         // Display result
+         if ( ledmatrix[tctr][0] == 1) {    
+            leds[tctr] = CRGB( 120, 255, 255); 
+            FastLED.show();          
+          }
+    }   
+    x1++;
+    x2--;
+    y1++;
+    y2--;
+  }
+      
+delay(2000);
+}
+
+
+void Matrixeffect() { // Matrix effect where characters fall from the sky randomly and then settle on letters in words
+
+// Blank display
+fill_solid( leds, 110, CRGB(0,0,0)); 
+FastLED.show();   
+delay(300);
+
+byte w = 0; // temp variable
+
+// Generate random delay speeds for each falling charater in columns
+byte dly1[11] = { random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10) };
+
+byte ptr[11] = { 0,0,0,0,0,0,0,0,0,0,0 }; // Points to the LED in each column we need to deal with
+/*
+  for ( byte o = 0; o < 11 ; o++) {
+
+   Serial.print(dly1[o]); 
+   Serial.print("   "); 
+   Serial.println(ptr[o]);     
+  }
+*/
+
+  for ( byte t = 0; t < 200; t++) { // Counter for completing all changes for 10 rows
+
+      for ( byte c = 0; c < 11; c++) { // Count through columns and check timer not exceeded
+   
+
+          if ((t > (dly1[c]*(ptr[c] + 1))) && ptr[c] < 9 ) { // If timer exceeded then erase current value and draw a white curosr in this position based on random time period     
+
+
+                // Write over the previous value
+                // Calculate the LED value from the Column and ptr value
+                w = ((c * 10)+(9 - ptr[c])); // Calculate the LED value in the 11 x 10 Matrix
+
+
+
+                  if ( (ledmatrix[w][0] == 1) &&(ptr[c]!=0)) { // If the bit set in LED Matrix then leave White
+                      leds[w] = CRGB(120,255,255);                      
+                     } else {            
+                    leds[w] = CRGB(0,150,0); 
+                    }
+               
+                FastLED.show();   
+                delay(20);
+
+                ptr[c]++; // Increment row and print White value    
+                
+                if ( ptr[c] < 9 ) { 
+                    
+                    // Calculate the LED value from the Column and ptr value
+                    w = ((c * 10)+(9 - ptr[c])); // Calculate the LED value in the 11 x 10 Matrix
+                    leds[w] = CRGB(120,255,255); 
+                    FastLED.show(); 
+
+
+      
+                } else {
+                // Calculate the LED value from the Column and ptr value
+                    w = ((c * 10)+(9 - ptr[c])); // Calculate the LED value in the 11 x 10 Matrix
+                    leds[w] = CRGB(0,150,0); 
+                    FastLED.show();
+              
+                }
+          
+          }
+      }
+
+  }
+
+ // Do last row in Array with White
+
+     for ( byte n = 0; n < 101; n=n+10){
+
+                if (ledmatrix[n][0] == 1){
+                     
+                     leds[n] = CRGB(120,255,255); 
+                    FastLED.show();  
+                }    
+     }
+
+/// Now clear the screen
+
+// Generate random delay speeds for each falling charater in columns
+byte dly2[11] = { random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10), random(10) };
+
+byte ptr2[11] = { 0,0,0,0,0,0,0,0,0,0,0 }; // Points to the LED in each column we need to deal with
+/*
+  for ( byte o = 0; o < 11 ; o++) {
+
+   Serial.print(dly1[o]); 
+   Serial.print("   "); 
+   Serial.println(ptr[o]);     
+  }
+*/
+
+  for ( byte t = 0; t < 200; t++) { // Counter for completing all changes for 10 rows
+
+      for ( byte c = 0; c < 11; c++) { // Count through columns and check timer not exceeded
+   
+
+          if ((t > (dly2[c]*(ptr2[c] + 1))) && ptr2[c] < 9 ) { // If timer exceeded then erase current value and draw a white curosr in this position based on random time period     
+
+
+                // Write over the previous value
+                // Calculate the LED value from the Column and ptr value
+                w = ((c * 10)+(9 - ptr2[c])); // Calculate the LED value in the 11 x 10 Matrix
+
+
+
+                  if ( (ledmatrix[w][0] == 1) &&(ptr2[c]!=0)) { // If the bit set in LED Matrix then leave White
+                      leds[w] = CRGB(120,255,255);                      
+                     } else {            
+                    leds[w] = CRGB(0,0,0); 
+                    }
+               
+                FastLED.show();   
+                delay(5);
+
+                ptr2[c]++; // Increment row and print White value    
+                
+                if ( ptr2[c] < 9 ) { 
+                    
+                    // Calculate the LED value from the Column and ptr value
+                    w = ((c * 10)+(9 - ptr2[c])); // Calculate the LED value in the 11 x 10 Matrix
+                    leds[w] = CRGB(0,150,0); 
+                    FastLED.show(); 
+
+
+      
+                } else {
+                // Calculate the LED value from the Column and ptr value
+                    w = ((c * 10)+(9 - ptr2[c])); // Calculate the LED value in the 11 x 10 Matrix
+
+                  if (ledmatrix[w][0] == 0) {
+                        leds[w] = CRGB(0,0,0); 
+                        FastLED.show();
+                  }     
+              
+                }
+          
+          }
+      }
+
+
+
+  }
+ 
+ 
+ // Do last row in Array with White
+
+     for ( byte n = 0; n < 101; n=n+10){
+
+                if (ledmatrix[n][0] == 1){
+                     
+                     leds[n] = CRGB(120,255,255); 
+                    FastLED.show();  
+                }    
+     }
+ 
+ 
+ 
+ //          leds[100] = CRGB(255,255,0); 
+ //         FastLED.show();    
+
+/*      
+  for ( byte o = 0; o < 11 ; o++) {
+
+   Serial.print(dly1[o]); 
+   Serial.print("   "); 
+   Serial.println(ptr[o]);     
+  }
+*/
+
+delay(2000);
+
+}
+
+ void UpdateArray() { // From time values update the Array with the LED positions that require lighting and turn off the previous LED values
+ 
+  
+  // "Display the time based on current RTC data"
+
+itis(); // Display it is permanently
+
+ if((minute()>4) && (minute()<10)){
+  // FIVE MINUTES
+  fivemins();
+  past();
+   
+  dTo();
+  dtenmins();
+  dquarter();
+  dtwenty();
+  dhalf();
+  doclock();   
+  }
+ if((minute()>9) && (minute()<15)) {
+  //TEN MINUTES;
+  tenmins();
+  past();
+  
+  dTo();
+  dfivemins();
+  dquarter();
+  dtwenty();
+  dhalf();
+  doclock();
+  }
+
+ if((minute()>14) && (minute()<20)) {
+  // QUARTER
+  quarter();
+  past();
+     
+  dfivemins();
+  dTo();
+  dtenmins();
+  dtwenty();
+  dhalf();
+  doclock();
+  }
+
+ if((minute()>19) && (minute()<25)) {
+  //TWENTY MINUTES
+  twenty();
+  past();
+  
+  dfivemins();
+  dTo();
+  dtenmins();
+  dquarter();
+  dhalf();
+  doclock();
+  }
+
+if((minute()>24) && (minute()<30)) {
+  //TWENTY FIVE
+  twentyfive();
+  past();
+  
+  dTo();
+  dtenmins();
+  dquarter();
+  dhalf();
+  doclock();
+  }
+
+if((minute()>29) && (minute()<35)) {
+  // HALF
+  half();
+  past();
+  
+  dfivemins();
+  dTo();
+  dtenmins();
+  dquarter();
+  dtwenty();
+  doclock();
+  }
+
+ if((minute()>34) && (minute()<40)) {
+  //TWENTY FIVE TO
+  twentyfive();
+  To();
+  
+  dpast();
+  dtenmins();
+  dquarter();
+  dhalf();
+  doclock();
+  }
+
+if((minute()>39) && (minute()<45)) {
+  //TWENTY TO  
+  twenty();
+  To();
+
+  dfivemins();
+  dpast();
+  dtenmins();
+  dquarter();
+  dhalf();
+  doclock();
+  }
+
+if((minute()>44) && (minute()<50)) {
+   // QUARTER TO
+   quarter();
+   To();
+   
+  dfivemins();
+  dpast();
+  dtenmins();
+  dtwenty();
+  dhalf();
+  doclock();  
+  }
+   
+if((minute()>49) && (minute()<55)){
+  // TEN TO
+  tenmins();
+  To();
+  
+  dfivemins();
+  dpast();
+  dquarter();
+  dtwenty();
+  dhalf();
+  doclock();
+  }
+  
+ if(minute()>54){
+  // FIVE TO
+  fivemins();
+  To();
+ 
+  dpast();
+  dtenmins();
+  dquarter();
+  dtwenty();
+  dhalf();
+  doclock();
+  }
+ 
+  if(minute()<5){
+   // OClock
+   oclock();
+   
+  dfivemins();
+  dpast();
+  dTo();
+  dtenmins();
+  dquarter();
+  dtwenty();
+  dhalf();   
+   
+ }
+
+
+// Display correct Hour for the clock
+// Do this by determining if after 30mins past the hour
+
+if(minute()<35){
+
+// Hours on the clock if 34 minutes or less past the hour
+
+  if((hour()==1)||(hour()==13)){
+   // One Oclock
+   one();
+   
+   dtwelve();
+   dtwo();
+   }
+
+  if((hour()==2)||(hour()==14)){
+   // Two Oclock
+   two();
+   
+   done();
+   dthree();
+   }
+   
+  if((hour()==3)||(hour()==15)){
+   // Three Oclock
+   three();
+   
+   dtwo();
+   dfour();
+   }   
+   
+  if((hour()==4)||(hour()==16)){
+   // four Oclock
+   four();
+   
+   dthree();
+   dfive();
+   }
+
+  if((hour()==5)||(hour()==17)){
+   // five Oclock
+   five();
+   
+   dfour();
+   dsix();
+   }
+   
+  if((hour()==6)||(hour()==18)){
+   // Six Oclock
+   six();
+   
+   dfive();
+   dseven();
+   }   
+  if((hour()==7)||(hour()==19)){
+   // Seven Oclock
+   seven();
+   
+   dsix();
+   deight();
+   }
+
+  if((hour()==8)||(hour()==20)){
+   // Eight Oclock
+   eight();
+   
+   dseven();
+   dnine();
+   }
+   
+  if((hour()==9)||(hour()==21)){
+   // Nine Oclock
+   nine();
+   
+   deight();
+   dten();
+   }   
+   
+  if((hour()==10)||(hour()==22)){
+   // Ten Oclock
+   ten();
+   
+   dnine();
+   deleven();
+   }
+
+  if((hour()==11)||(hour()==23)){
+   // Eleven Oclock
+   eleven();
+   
+   dten();
+   dtwelve();
+   }
+   
+  if((hour()==12)||(hour()==0)){
+   // Twelve Oclock
+   twelve();
+   
+   deleven();
+   done();
+   } 
+
+} else {
+
+
+// Hours on the clock if 35 minutes or more past the hour
+
+  if((hour()==1)||(hour()==13)){
+   // To two Oclock
+   two();
+   
+   done();
+   dthree();
+   }
+
+  if((hour()==2)||(hour()==14)){
+   // To three Oclock
+   three();
+   
+   dtwo();
+   dfour();
+   }
+   
+  if((hour()==3)||(hour()==15)){
+   // To four Oclock
+   four();
+     
+   dthree();
+   dfive();
+   }   
+   
+  if((hour()==4)||(hour()==16)){
+   // To five Oclock
+   five();
+   
+   dfour();
+   dsix();
+   }
+
+  if((hour()==5)||(hour()==17)){
+   // To six Oclock
+   six();
+   
+   dfive();
+   dseven();
+   }
+   
+  if((hour()==6)||(hour()==18)){
+   // To seven Oclock
+   seven();
+   
+   dsix();
+   deight();
+   }   
+  if((hour()==7)||(hour()==19)){
+   // To eight Oclock
+   eight();
+   
+   dseven();
+   dnine();
+   }
+
+  if((hour()==8)||(hour()==20)){
+   // To nine Oclock
+   nine();
+   
+   deight();
+   dten();
+   }
+   
+  if((hour()==9)||(hour()==21)){
+   // To ten Oclock
+   ten();
+   
+   dnine();
+   deleven();
+   }   
+   
+  if((hour()==10)||(hour()==22)){
+   // To eleven Oclock
+   eleven();
+   
+   dten();
+   dtwelve();
+   }
+
+  if((hour()==11)||(hour()==23)){
+   // To twelve Oclock
+   twelve();
+   
+   deleven();
+   done();
+   }
+   
+  if((hour()==12)||(hour()==0)){
+   // To one Oclock
+   one();
+   
+   dtwelve();
+   dtwo();
+   } 
+
+  
+} 
+
+
+
+}
+
+void ledtest() { // Powerup sequence for unit
+
+  // Flash LED to show calibrate done
+
+      for (int x = 0; x < 110; x++) {
+        leds[x] = CRGB::Blue;   
+      }
+      FastLED.show();
+      delay(300);
+
+      for (int x = 0; x < 110; x++) {
+        leds[x] = CRGB::Green;
+      }
+      FastLED.show();
+      delay(300);
+
+      for (int x = 0; x < 110; x++) {
+        leds[x] = CRGB::Red;
+      }
+      FastLED.show();
+      delay(300);
+
+      for (int x = 0; x < 110; x++) {
+        leds[x] = CRGB::Yellow;
+      }
+      FastLED.show();
+      delay(300);
+
+      for (int x = 0; x < 110; x++) {
+        leds[x] = CRGB::Magenta;
+      }
+      FastLED.show();
+      delay(300);
+
+      
+      for (int x = 0; x < 110; x++) {
+
+        leds[x] = CRGB::Black;
+
+      }
+        FastLED.show();      
+        delay(T1); 
+
+
+
+}
+
+
+
+// DISPLAY ROUTINES TO TURN ON LEDS
+
+
+void doclock() {
+  // "oclock"
+
+    ledmatrix[50][0] = 0; 
+    ledmatrix[60][0] = 0; 
+    ledmatrix[70][0] = 0; 
+    ledmatrix[80][0] = 0; 
+    ledmatrix[90][0] = 0; 
+    ledmatrix[100][0] = 0; 
+        
+/*   
+    leds[50] = CRGB::Black;
+    leds[60] = CRGB::Black;
+    leds[70] = CRGB::Black;
+    leds[80] = CRGB::Black; 
+    leds[90] = CRGB::Black; 
+    leds[100] = CRGB::Black;        
+      FastLED.show();
+*/
+
+}
+
+void oclock() {
+  // "oclock"
+    ledmatrix[50][0] = 1; 
+    ledmatrix[60][0] = 1; 
+    ledmatrix[70][0] = 1; 
+    ledmatrix[80][0] = 1; 
+    ledmatrix[90][0] = 1; 
+    ledmatrix[100][0] = 1; 
+}
+
+
+void dtwelve() {
+  // "twelve"
+
+    ledmatrix[52][0] = 0; 
+    ledmatrix[62][0] = 0; 
+    ledmatrix[72][0] = 0; 
+    ledmatrix[82][0] = 0; 
+    ledmatrix[92][0] = 0; 
+    ledmatrix[102][0] = 0; 
+        
+}
+
+void twelve() {
+  // "twelve"
+    ledmatrix[52][0] = 1; 
+    ledmatrix[62][0] = 1; 
+    ledmatrix[72][0] = 1; 
+    ledmatrix[82][0] = 1; 
+    ledmatrix[92][0] = 1; 
+    ledmatrix[102][0] = 1;
+}
+
+void deleven() {
+  // "eleven"
+    ledmatrix[51][0] = 0; 
+    ledmatrix[61][0] = 0; 
+    ledmatrix[71][0] = 0; 
+    ledmatrix[81][0] = 0; 
+    ledmatrix[91][0] = 0; 
+    ledmatrix[101][0] = 0; 
+}
+
+void eleven() {
+  // "eleven"
+    ledmatrix[51][0] = 1; 
+    ledmatrix[61][0] = 1; 
+    ledmatrix[71][0] = 1; 
+    ledmatrix[81][0] = 1; 
+    ledmatrix[91][0] = 1; 
+    ledmatrix[101][0] = 1; 
+}
+
+void dten() {
+  // "ten"
+
+    ledmatrix[0][0] = 0; 
+    ledmatrix[10][0] = 0; 
+    ledmatrix[20][0] = 0; 
+    
+}
+
+void ten() {
+  // "ten"
+    ledmatrix[0][0] = 1; 
+    ledmatrix[10][0] = 1; 
+    ledmatrix[20][0] = 1; 
+}
+
+void dnine() {
+  // "nine"
+    ledmatrix[2][0] = 0; 
+    ledmatrix[12][0] = 0; 
+    ledmatrix[22][0] = 0; 
+    ledmatrix[32][0] = 0;     
+}
+
+void nine() {
+  // "eleven"
+    ledmatrix[2][0] = 1; 
+    ledmatrix[12][0] = 1; 
+    ledmatrix[22][0] = 1; 
+    ledmatrix[32][0] = 1; 
+}
+
+
+void deight() {
+  // "eight"
+    ledmatrix[1][0] = 0; 
+    ledmatrix[11][0] = 0; 
+    ledmatrix[21][0] = 0; 
+    ledmatrix[31][0] = 0;  
+    ledmatrix[41][0] = 0;  
+}
+
+void eight() {
+  // "eight"
+    ledmatrix[1][0] = 1; 
+    ledmatrix[11][0] = 1; 
+    ledmatrix[21][0] = 1; 
+    ledmatrix[31][0] = 1;  
+    ledmatrix[41][0] = 1; 
+}
+
+
+void dseven() {
+  // "seven"
+    ledmatrix[55][0] = 0; 
+    ledmatrix[65][0] = 0; 
+    ledmatrix[75][0] = 0; 
+    ledmatrix[85][0] = 0;  
+    ledmatrix[95][0] = 0; 
+}
+void seven() {
+  // "seven"
+    ledmatrix[55][0] = 1; 
+    ledmatrix[65][0] = 1; 
+    ledmatrix[75][0] = 1; 
+    ledmatrix[85][0] = 1;  
+    ledmatrix[95][0] = 1; 
+}
+
+void dsix() {
+  // "six"
+    ledmatrix[83][0] = 0; 
+    ledmatrix[93][0] = 0; 
+    ledmatrix[103][0] = 0; 
+}
+
+void six() {
+  // "six"
+    ledmatrix[83][0] = 1; 
+    ledmatrix[93][0] = 1; 
+    ledmatrix[103][0] = 1; 
+}
+
+void dfive() {
+  // "five"
+    ledmatrix[43][0] = 0; 
+    ledmatrix[53][0] = 0; 
+    ledmatrix[63][0] = 0; 
+    ledmatrix[73][0] = 0; 
+}
+
+void five() {
+  // "five"
+    ledmatrix[43][0] = 1; 
+    ledmatrix[53][0] = 1; 
+    ledmatrix[63][0] = 1; 
+    ledmatrix[73][0] = 1;
+}
+
+
+
+void dfour() {
+  // "four"
+    ledmatrix[3][0] = 0; 
+    ledmatrix[13][0] = 0; 
+    ledmatrix[23][0] = 0; 
+    ledmatrix[33][0] = 0;
+}
+
+void four() {
+  // "four"
+    ledmatrix[3][0] = 1; 
+    ledmatrix[13][0] = 1; 
+    ledmatrix[23][0] = 1; 
+    ledmatrix[33][0] = 1;
+}
+
+void dthree() {
+  // "three"
+    ledmatrix[64][0] = 0; 
+    ledmatrix[74][0] = 0; 
+    ledmatrix[84][0] = 0; 
+    ledmatrix[94][0] = 0;  
+    ledmatrix[104][0] = 0; 
+}
+
+void three() {
+  // "three"
+    ledmatrix[64][0] = 1; 
+    ledmatrix[74][0] = 1; 
+    ledmatrix[84][0] = 1; 
+    ledmatrix[94][0] = 1;  
+    ledmatrix[104][0] = 1; 
+}
+
+void dtwo() {
+  // "two"
+    ledmatrix[34][0] = 0; 
+    ledmatrix[44][0] = 0; 
+    ledmatrix[54][0] = 0; 
+}
+
+void two() {
+  // "two"
+    ledmatrix[34][0] = 1; 
+    ledmatrix[44][0] = 1; 
+    ledmatrix[54][0] = 1; 
+}
+
+void done() {
+  // "one"
+    ledmatrix[4][0] = 0; 
+    ledmatrix[14][0] = 0; 
+    ledmatrix[24][0] = 0; 
+}
+
+void one() {
+  // "one"
+    ledmatrix[4][0] = 1; 
+    ledmatrix[14][0] = 1; 
+    ledmatrix[24][0] = 1; 
+}
+
+void dpast() {
+  // "past"
+    ledmatrix[5][0] = 0; 
+    ledmatrix[15][0] = 0; 
+    ledmatrix[25][0] = 0; 
+    ledmatrix[35][0] = 0; 
+}
+
+void past() {
+  // "past"
+    ledmatrix[5][0] = 1; 
+    ledmatrix[15][0] = 1; 
+    ledmatrix[25][0] = 1; 
+    ledmatrix[35][0] = 1; 
+}
+
+void dTo() {
+  // "To"
+    ledmatrix[96][0] = 0; 
+    ledmatrix[106][0] = 0; 
+}
+
+void To() {
+  // "To"
+    ledmatrix[96][0] = 1; 
+    ledmatrix[106][0] = 1; 
+}
+
+void dfivemins() {
+  // "five"
+    ledmatrix[77][0] = 0; 
+    ledmatrix[87][0] = 0; 
+    ledmatrix[97][0] = 0; 
+    ledmatrix[107][0] = 0; 
+}
+
+void fivemins() {
+  // "five"
+    ledmatrix[77][0] = 1; 
+    ledmatrix[87][0] = 1; 
+    ledmatrix[97][0] = 1; 
+    ledmatrix[107][0] = 1;
+}
+
+void dtwenty() {
+  // "twenty"
+    ledmatrix[7][0] = 0; 
+    ledmatrix[17][0] = 0; 
+    ledmatrix[27][0] = 0; 
+    ledmatrix[37][0] = 0;  
+    ledmatrix[47][0] = 0; 
+    ledmatrix[57][0] = 0; 
+}
+
+void twenty() {
+  // "twenty"
+    ledmatrix[7][0] = 1; 
+    ledmatrix[17][0] = 1; 
+    ledmatrix[27][0] = 1; 
+    ledmatrix[37][0] = 1;  
+    ledmatrix[47][0] = 1; 
+    ledmatrix[57][0] = 1; 
+}
+
+void dtwentyfive() {
+  // "twenty"
+    ledmatrix[7][0] = 0; 
+    ledmatrix[17][0] = 0; 
+    ledmatrix[27][0] = 0; 
+    ledmatrix[37][0] = 0;  
+    ledmatrix[47][0] = 0; 
+    ledmatrix[57][0] = 0; 
+    ledmatrix[77][0] = 0; 
+    ledmatrix[87][0] = 0; 
+    ledmatrix[97][0] = 0; 
+    ledmatrix[107][0] = 0;  
+
+}
+
+void twentyfive() {
+  // "twenty"
+    ledmatrix[7][0] = 1; 
+    ledmatrix[17][0] = 1; 
+    ledmatrix[27][0] = 1; 
+    ledmatrix[37][0] = 1;  
+    ledmatrix[47][0] = 1; 
+    ledmatrix[57][0] = 1; 
+    ledmatrix[77][0] = 1; 
+    ledmatrix[87][0] = 1; 
+    ledmatrix[97][0] = 1; 
+    ledmatrix[107][0] = 1;  
+}
+
+void dquarter() {
+  // "quarter"
+    ledmatrix[18][0] = 0; 
+    ledmatrix[28][0] = 0; 
+    ledmatrix[38][0] = 0; 
+    ledmatrix[48][0] = 0;  
+    ledmatrix[58][0] = 0; 
+    ledmatrix[68][0] = 0; 
+    ledmatrix[78][0] = 0; 
+}
+
+void quarter() {
+  // "quarter"
+    ledmatrix[18][0] = 1; 
+    ledmatrix[28][0] = 1; 
+    ledmatrix[38][0] = 1; 
+    ledmatrix[48][0] = 1;  
+    ledmatrix[58][0] = 1; 
+    ledmatrix[68][0] = 1; 
+    ledmatrix[78][0] = 1; 
+}
+
+void dtenmins() {
+  // "one"
+    ledmatrix[56][0] = 0; 
+    ledmatrix[66][0] = 0; 
+    ledmatrix[76][0] = 0; 
+}
+
+void tenmins() {
+  // "one"
+    ledmatrix[56][0] = 1; 
+    ledmatrix[66][0] = 1; 
+    ledmatrix[76][0] = 1; 
+}
+
+void dhalf() {
+  // "half"
+    ledmatrix[6][0] = 0; 
+    ledmatrix[16][0] = 0; 
+    ledmatrix[26][0] = 0; 
+    ledmatrix[36][0] = 0; 
+}
+
+void half() {
+  // "half"
+    ledmatrix[6][0] = 1; 
+    ledmatrix[16][0] = 1; 
+    ledmatrix[26][0] = 1; 
+    ledmatrix[36][0] = 1; 
+}
+
+
+
+void textblock() {
+
+ // Personalised Name Text Block
+
+}
+
+
+
+void ditis() {
+  // "It Is"
+    ledmatrix[9][0] = 0; 
+    ledmatrix[19][0] = 0; 
+    ledmatrix[39][0] = 0; 
+    ledmatrix[49][0] = 0; 
+}
+
+void itis() {
+  // "It Is"
+    ledmatrix[9][0] = 1; 
+    ledmatrix[19][0] = 1; 
+    ledmatrix[39][0] = 1; 
+    ledmatrix[49][0] = 1; 
+}
