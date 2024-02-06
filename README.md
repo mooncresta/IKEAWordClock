@@ -7,4 +7,4 @@ From https://www.instructables.com/Word-Clock-2/
 
 Reworked to ESP32 without RTC, with NTP - better refresh
 
-ParticleIO project setup
+PLatformIO project setup
